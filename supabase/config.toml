@@ -1,0 +1,19 @@
+[functions.attendance-check-in]
+verify_jwt = true
+entrypoint = "./functions/attendance-check-in/index.ts"
+
+[functions.attendance-check-out]
+verify_jwt = true
+entrypoint = "./functions/attendance-check-out/index.ts"
+
+[functions.location-ingest]
+verify_jwt = true
+entrypoint = "./functions/location-ingest/index.ts"
+
+[functions.integrity-verify]
+verify_jwt = true
+entrypoint = "./functions/integrity-verify/index.ts"
+
+[functions.company-signup]
+verify_jwt = false
+entrypoint = "./functions/company-signup/index.ts"
