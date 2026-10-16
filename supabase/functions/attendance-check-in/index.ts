@@ -2,9 +2,17 @@ import { createClient } from "npm:@supabase/supabase-js@2.58.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
+
+interface CheckInPayload {
+  device_id: string;
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+  is_mock?: boolean;
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -12,175 +20,198 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { auth: { persistSession: false } }
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({ error: "Server configuration missing (Supabase URL or Service Key)" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false },
+    });
+
+    // 1. VALIDATE AUTHORIZATION JWT
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Missing authorization" }), {
-        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Missing Authorization header" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: "Invalid token" }), {
-        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const body = await req.json();
+    const token = authHeader.replace("Bearer ", "").trim();
     const {
-      employee_id,
-      device_id,
-      latitude,
-      longitude,
-      accuracy,
-      is_mock,
-      integrity_token,
-    } = body;
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
 
-    if (!employee_id || latitude == null || longitude == null) {
-      return new Response(JSON.stringify({ error: "Missing required fields" }), {
-        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Invalid or expired JWT token", details: authError?.message }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Get the user's profile and verify org membership
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("id, organization_id, role")
-      .eq("id", user.id)
-      .maybeSingle();
+    // 2. PARSE REQUEST BODY
+    const body: CheckInPayload = await req.json();
+    const { device_id, latitude, longitude, accuracy, is_mock } = body;
 
-    if (!profile) {
-      return new Response(JSON.stringify({ error: "Profile not found" }), {
-        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!device_id || latitude == null || longitude == null) {
+      return new Response(
+        JSON.stringify({ error: "Missing required fields: device_id, latitude, longitude" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Verify the employee belongs to the same org
-    const { data: employee } = await supabase
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return new Response(
+        JSON.stringify({ error: "Invalid GPS coordinates out of geographical range" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 3. VALIDATE ACTIVE EMPLOYEE
+    const { data: employee, error: empError } = await supabase
       .from("employees")
-      .select("id, organization_id, employment_status, account_status, shift_id")
-      .eq("id", employee_id)
+      .select("id, organization_id, profile_id, status")
+      .eq("profile_id", user.id)
       .maybeSingle();
 
-    if (!employee || employee.organization_id !== profile.organization_id) {
-      return new Response(JSON.stringify({ error: "Employee not found" }), {
-        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (empError || !employee) {
+      return new Response(
+        JSON.stringify({ error: "No employee record associated with authenticated user" }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    if (employee.account_status !== "active" && employee.account_status !== "pending") {
-      return new Response(JSON.stringify({ error: "Employee account not active" }), {
-        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (employee.status.toUpperCase() !== "ACTIVE") {
+      return new Response(
+        JSON.stringify({ error: `Employee is not active (current status: ${employee.status})` }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Check for existing active session
-    const { data: existing } = await supabase
-      .from("attendance_sessions")
-      .select("id")
-      .eq("employee_id", employee_id)
-      .eq("attendance_status", "active")
+    // 4. VALIDATE DEVICE_ID
+    const { data: device, error: devError } = await supabase
+      .from("devices")
+      .select("id, employee_id, organization_id, device_identifier, status")
+      .eq("id", device_id)
       .maybeSingle();
 
-    if (existing) {
-      return new Response(JSON.stringify({ error: "Active session already exists", session_id: existing.id }), {
-        status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (devError || !device) {
+      return new Response(
+        JSON.stringify({ error: "Device not found or not registered" }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Determine integrity status
-    let integrityStatus = "unverified";
-    if (is_mock) {
-      integrityStatus = "high_risk";
-    } else if (accuracy && accuracy > 100) {
-      integrityStatus = "review_required";
-    } else {
-      integrityStatus = "trusted";
+    if (device.employee_id !== employee.id || device.organization_id !== employee.organization_id) {
+      return new Response(
+        JSON.stringify({ error: "Device binding mismatch: device does not belong to this employee" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Create attendance session
-    const { data: session, error: sessionError } = await supabase
+    if (device.status.toUpperCase() !== "ACTIVE") {
+      return new Response(
+        JSON.stringify({ error: `Device is not authorized (status: ${device.status})` }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 5. ENSURE NO ACTIVE ATTENDANCE SESSION EXISTS
+    const { data: existingSession, error: checkError } = await supabase
       .from("attendance_sessions")
-      .insert({
-        organization_id: employee.organization_id,
-        employee_id: employee_id,
-        device_id: device_id || null,
-        shift_id: employee.shift_id,
-        check_in_at: new Date().toISOString(),
-        check_in_location: `POINT(${longitude} ${latitude})`,
-        check_in_accuracy: accuracy || null,
-        integrity_status: integrityStatus,
-        attendance_status: "active",
-        review_status: "pending",
-      })
-      .select("id, check_in_at")
-      .single();
+      .select("id, check_in_time, status")
+      .eq("employee_id", employee.id)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
 
-    if (sessionError) {
-      return new Response(JSON.stringify({ error: sessionError.message }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (checkError) {
+      return new Response(
+        JSON.stringify({ error: "Error checking active sessions", details: checkError.message }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Create location session
-    const { data: locSession, error: locError } = await supabase
-      .from("location_sessions")
-      .insert({
-        organization_id: employee.organization_id,
-        employee_id: employee_id,
-        attendance_session_id: session.id,
-        device_id: device_id || null,
-        started_at: new Date().toISOString(),
-        status: "active",
-      })
-      .select("id")
-      .single();
+    if (existingSession) {
+      return new Response(
+        JSON.stringify({
+          error: "An active attendance session already exists for this employee",
+          active_session_id: existingSession.id,
+          check_in_time: existingSession.check_in_time,
+        }),
+        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
-    // Create fraud event if mock location detected
+    // 6. RECORD FRAUD EVENT IF MOCK LOCATION DETECTED
     if (is_mock) {
       await supabase.from("fraud_events").insert({
         organization_id: employee.organization_id,
-        employee_id: employee_id,
-        device_id: device_id || null,
-        attendance_session_id: session.id,
-        event_type: "mock_location_signal",
-        severity: "high",
-        evidence: { is_mock, accuracy, latitude, longitude },
-        description: "Mock location signal detected during check-in",
-        review_status: "open",
+        employee_id: employee.id,
+        event_type: "MOCK_LOCATION",
+        severity: "HIGH",
+        status: "PENDING",
+        details: {
+          phase: "check-in",
+          latitude,
+          longitude,
+          accuracy,
+          device_id,
+          detected_at: new Date().toISOString(),
+        },
       });
     }
 
-    // Audit log
-    await supabase.from("audit_logs").insert({
-      organization_id: employee.organization_id,
-      actor_id: profile.id,
-      action: "attendance_check_in",
-      target_type: "attendance_session",
-      target_id: session.id,
-      metadata: { employee_id, integrity_status: integrityStatus },
-    });
+    // 7. INSERT ATTENDANCE SESSION WITH POSTGIS POINT
+    const nowIso = new Date().toISOString();
+    const { data: session, error: insertError } = await supabase
+      .from("attendance_sessions")
+      .insert({
+        organization_id: employee.organization_id,
+        employee_id: employee.id,
+        device_id: device.id,
+        check_in_time: nowIso,
+        check_in_location: `POINT(${longitude} ${latitude})`,
+        status: "ACTIVE",
+      })
+      .select("id, organization_id, employee_id, device_id, check_in_time, status")
+      .single();
 
-    return new Response(JSON.stringify({
-      success: true,
-      session_id: session.id,
-      location_session_id: locSession?.id || null,
-      check_in_at: session.check_in_at,
-      integrity_status: integrityStatus,
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    if (insertError) {
+      return new Response(
+        JSON.stringify({ error: "Failed to create attendance session", details: insertError.message }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 8. UPDATE DEVICE LAST SEEN
+    await supabase
+      .from("devices")
+      .update({ last_seen_at: nowIso })
+      .eq("id", device.id);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        session_id: session.id,
+        check_in_time: session.check_in_time,
+        organization_id: session.organization_id,
+        employee_id: session.employee_id,
+        status: session.status,
+        mock_flagged: Boolean(is_mock),
+      }),
+      { status: 201, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (err) {
-    return new Response(JSON.stringify({ error: (err as Error).message }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: "Internal server error", message: (err as Error).message }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });
