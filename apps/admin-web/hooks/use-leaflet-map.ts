@@ -16,6 +16,12 @@ export function useLeafletMap(opts: { center: [number, number]; zoom: number }) 
     import('leaflet').then((mod) => {
       if (cancelled || !containerRef.current || mapRef.current) return;
       const leaflet = mod.default;
+
+      // Clean up previous Leaflet instance ID if attached to container DOM node
+      if ((containerRef.current as any)._leaflet_id) {
+        delete (containerRef.current as any)._leaflet_id;
+      }
+
       mapRef.current = leaflet.map(containerRef.current, {
         center: opts.center,
         zoom: opts.zoom,
@@ -28,11 +34,19 @@ export function useLeafletMap(opts: { center: [number, number]; zoom: number }) 
       setL(leaflet);
       setReady(true);
     });
+
     return () => {
       cancelled = true;
       if (mapRef.current) {
-        mapRef.current.remove();
+        try {
+          mapRef.current.remove();
+        } catch {
+          // ignore already removed
+        }
         mapRef.current = null;
+      }
+      if (containerRef.current && (containerRef.current as any)._leaflet_id) {
+        delete (containerRef.current as any)._leaflet_id;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

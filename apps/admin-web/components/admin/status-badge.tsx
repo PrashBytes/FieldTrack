@@ -3,32 +3,51 @@ import { cn } from '@/lib/utils';
 
 type Variant = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
-const styles: Record<Variant, string> = {
-  success: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  warning: 'bg-amber-100 text-amber-700 border-amber-200',
-  danger: 'bg-red-100 text-red-700 border-red-200',
-  info: 'bg-blue-100 text-blue-700 border-blue-200',
-  neutral: 'bg-slate-100 text-slate-700 border-slate-200',
+const badgeStyles: Record<Variant, string> = {
+  success: 'bg-emerald-50/80 text-emerald-700 border-emerald-200/80 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50',
+  warning: 'bg-amber-50/80 text-amber-700 border-amber-200/80 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800/50',
+  danger: 'bg-rose-50/80 text-rose-700 border-rose-200/80 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/50',
+  info: 'bg-indigo-50/80 text-indigo-700 border-indigo-200/80 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800/50',
+  neutral: 'bg-slate-100/80 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700',
+};
+
+const dotStyles: Record<Variant, string> = {
+  success: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  danger: 'bg-rose-500',
+  info: 'bg-indigo-500',
+  neutral: 'bg-slate-400',
 };
 
 export function StatusBadge({
   variant = 'neutral',
   children,
   className,
+  showDot = true,
 }: {
   variant?: Variant;
   children: ReactNode;
   className?: string;
+  showDot?: boolean;
 }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold',
-        styles[variant],
+        'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-tight transition-colors shadow-2xs',
+        badgeStyles[variant],
         className
       )}
     >
-      {children}
+      {showDot && (
+        <span
+          className={cn(
+            'h-1.5 w-1.5 shrink-0 rounded-full',
+            dotStyles[variant],
+            variant === 'success' || variant === 'info' ? 'animate-pulse' : ''
+          )}
+        />
+      )}
+      <span className="capitalize">{children}</span>
     </span>
   );
 }
