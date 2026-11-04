@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { supabase, shouldBypassNetwork } from '@/lib/supabase/client';
 import { MOCK_EMPLOYEES } from '@/lib/supabase/mock-data';
 import { useAuth } from '@/lib/auth/auth-context';
@@ -9,8 +10,17 @@ import { PageHeader } from '@/components/admin/page-header';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { StatusBadge } from '@/components/admin/status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Table,
   TableBody,
@@ -26,7 +36,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { UserPlus, Search, ChevronLeft, ChevronRight, Users } from 'lucide-react';
+import { toast } from 'sonner';
+import { UserPlus, Search, ChevronLeft, ChevronRight, Users, Loader2 } from 'lucide-react';
 
 interface EmployeeItem {
   id: string;
@@ -42,14 +53,162 @@ interface EmployeeItem {
 
 const PAGE_SIZE = 10;
 
-export default function EmployeesPage() {
+function EmployeesPageContent() {
   const { profile } = useAuth();
+  const searchParams = useSearchParams();
   const [employees, setEmployees] = useState<EmployeeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
+
+  // Add Employee Modal & Form state
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [newEmpForm, setNewEmpForm] = useState({
+    employee_code: '',
+    full_name: '',
+    email: '',
+    phone: '',
+    department: 'Operations',
+  });
+
+  // Automatically open modal if ?action=new query param is present
+  useEffect(() => {
+    if (searchParams.get('action') === 'new') {
+      setIsAddModalOpen(true);
+    }
+  }, [searchParams]);
+
+  const handleAddEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newEmpForm.full_name.trim()) {
+      toast.error('Full name is required');
+      return;
+    }
+    setSubmitting(true);
+
+    const isMock =
+      shouldBypassNetwork() ||
+      !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project-id') ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder');
+
+    if (isMock) {
+      // Simulate quick async network round-trip for responsive UI
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const fakeId = crypto.randomUUID();
+      const fakeProfileId = crypto.randomUUID();
+      const generatedCode =
+        newEmpForm.employee_code.trim() || `EMP-${Math.floor(100 + Math.random() * 900)}`;
+
+      const newEmployeeItem: EmployeeItem = {
+        id: fakeId,
+        employee_code: generatedCode,
+        department: newEmpForm.department || 'Operations',
+        status: 'ACTIVE',
+        created_at: new Date().toISOString(),
+        profiles: {
+          full_name: newEmpForm.full_name.trim(),
+          email: newEmpForm.email.trim() || null,
+        },
+      };
+
+      // Keep mock dataset in sync for search/filter/pagination in memory
+      (MOCK_EMPLOYEES as any[]).unshift({
+        id: fakeId,
+        organization_id: profile?.organization_id || '00000000-0000-0000-0000-000000000001',
+        profile_id: fakeProfileId,
+        employee_code: generatedCode,
+        email: newEmpForm.email.trim() || null,
+        phone: newEmpForm.phone.trim() || null,
+        department: newEmpForm.department || 'Operations',
+        status: 'ACTIVE',
+        created_at: new Date().toISOString(),
+        profiles: {
+          full_name: newEmpForm.full_name.trim(),
+          email: newEmpForm.email.trim() || null,
+          role: 'EMPLOYEE',
+        },
+      });
+
+      // Directly update local React state array that populates the Employee table
+      setEmployees((prev) => [newEmployeeItem, ...prev]);
+      setTotal((prev) => prev + 1);
+
+      // Reset form and close modal
+      setNewEmpForm({
+        employee_code: '',
+        full_name: '',
+        email: '',
+        phone: '',
+        department: 'Operations',
+      });
+      setIsAddModalOpen(false);
+      setSubmitting(false);
+
+      toast.success('Employee added locally (Mock Mode)');
+      return;
+    }
+
+    try {
+      const newUserId = crypto.randomUUID();
+      await supabase.from('profiles').insert({
+        id: newUserId,
+        organization_id: profile?.organization_id,
+        role: 'EMPLOYEE',
+        full_name: newEmpForm.full_name.trim(),
+      });
+
+      const generatedCode =
+        newEmpForm.employee_code.trim() || `EMP-${Math.floor(100 + Math.random() * 900)}`;
+
+      const { data: empData, error: empError } = await supabase
+        .from('employees')
+        .insert({
+          organization_id: profile?.organization_id,
+          profile_id: newUserId,
+          employee_code: generatedCode,
+          email: newEmpForm.email.trim() || null,
+          phone: newEmpForm.phone.trim() || null,
+          department: newEmpForm.department,
+          status: 'ACTIVE',
+        })
+        .select('id, employee_code, department, status, created_at')
+        .single();
+
+      if (empError) throw empError;
+
+      const newEmployeeItem: EmployeeItem = {
+        id: empData.id,
+        employee_code: empData.employee_code,
+        department: empData.department,
+        status: empData.status,
+        created_at: empData.created_at,
+        profiles: {
+          full_name: newEmpForm.full_name.trim(),
+          email: newEmpForm.email.trim() || null,
+        },
+      };
+
+      setEmployees((prev) => [newEmployeeItem, ...prev]);
+      setTotal((prev) => prev + 1);
+      setIsAddModalOpen(false);
+      setNewEmpForm({
+        employee_code: '',
+        full_name: '',
+        email: '',
+        phone: '',
+        department: 'Operations',
+      });
+      toast.success('Employee created successfully');
+    } catch (err: any) {
+      toast.error(`Failed to add employee: ${err.message || 'Unknown error'}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const fetchEmployees = useCallback(async () => {
     // 1. Short-circuit: if in local development or mock mode, render immediately
@@ -151,12 +310,13 @@ export default function EmployeesPage() {
         title="Active Personnel & Fleet Staff"
         description="Search, inspect, and manage field personnel credentials, tracking hardware, and shift assignments."
       >
-        <Link href="/employees/new">
-          <Button className="h-9 gap-2 bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm shadow-indigo-500/20 font-medium">
-            <UserPlus className="h-4 w-4" />
-            Add Employee
-          </Button>
-        </Link>
+        <Button
+          onClick={() => setIsAddModalOpen(true)}
+          className="h-9 gap-2 bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm shadow-indigo-500/20 font-medium cursor-pointer"
+        >
+          <UserPlus className="h-4 w-4" />
+          Add Employee
+        </Button>
       </PageHeader>
 
       <Card className="border border-slate-800/80 bg-slate-900/80 text-slate-100 shadow-xl rounded-xl">
@@ -218,11 +378,14 @@ export default function EmployeesPage() {
               <p className="text-xs text-slate-400 mt-1 max-w-sm">
                 {search ? 'No personnel match the query. Try adjusting your search keywords.' : 'Get started by enrolling field dispatchers and tracking devices.'}
               </p>
-              <Link href="/employees/new" className="mt-4">
-                <Button variant="outline" size="sm" className="h-8.5 rounded-lg border-slate-700 text-slate-200 hover:bg-slate-800 hover:text-white">
-                  Enroll Employee
-                </Button>
-              </Link>
+              <Button
+                onClick={() => setIsAddModalOpen(true)}
+                variant="outline"
+                size="sm"
+                className="mt-4 h-8.5 rounded-lg border-slate-700 text-slate-200 hover:bg-slate-800 hover:text-white cursor-pointer"
+              >
+                Enroll Employee
+              </Button>
             </div>
           ) : (
             <>
@@ -354,6 +517,147 @@ export default function EmployeesPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Add Employee Dialog Modal */}
+      <Dialog open={isAddModalOpen} onOpenChange={setIsAddModalOpen}>
+        <DialogContent className="sm:max-w-[480px] bg-slate-900 border-slate-800 text-slate-100 shadow-2xl">
+          <DialogHeader>
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                <UserPlus className="h-4.5 w-4.5" />
+              </div>
+              <div>
+                <DialogTitle className="text-lg font-bold text-slate-100">Add New Employee</DialogTitle>
+                <DialogDescription className="text-xs text-slate-400">
+                  Register workforce personnel and assign department credentials.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <form onSubmit={handleAddEmployee} className="space-y-4 pt-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="modal_full_name" className="text-xs font-semibold text-slate-300">
+                Full Name <span className="text-rose-400">*</span>
+              </Label>
+              <Input
+                id="modal_full_name"
+                placeholder="e.g. John Miller"
+                value={newEmpForm.full_name}
+                onChange={(e) => setNewEmpForm({ ...newEmpForm, full_name: e.target.value })}
+                required
+                className="bg-slate-950/70 border-slate-800 text-slate-100 placeholder:text-slate-500 text-sm focus:border-indigo-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="modal_employee_code" className="text-xs font-semibold text-slate-300">
+                  Employee ID / Code
+                </Label>
+                <Input
+                  id="modal_employee_code"
+                  placeholder="e.g. EMP-105"
+                  value={newEmpForm.employee_code}
+                  onChange={(e) => setNewEmpForm({ ...newEmpForm, employee_code: e.target.value })}
+                  className="bg-slate-950/70 border-slate-800 text-slate-100 placeholder:text-slate-500 text-sm font-mono focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="modal_department" className="text-xs font-semibold text-slate-300">
+                  Department
+                </Label>
+                <Select
+                  value={newEmpForm.department}
+                  onValueChange={(val) => setNewEmpForm({ ...newEmpForm, department: val })}
+                >
+                  <SelectTrigger
+                    id="modal_department"
+                    className="bg-slate-950/70 border-slate-800 text-slate-200 text-sm focus:border-indigo-500"
+                  >
+                    <SelectValue placeholder="Department" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                    <SelectItem value="Fleet Dispatch">Fleet Dispatch</SelectItem>
+                    <SelectItem value="Warehouse Operations">Warehouse Operations</SelectItem>
+                    <SelectItem value="Field Logistics">Field Logistics</SelectItem>
+                    <SelectItem value="Customer Operations">Customer Operations</SelectItem>
+                    <SelectItem value="Operations">Operations</SelectItem>
+                    <SelectItem value="Management">Management</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="modal_email" className="text-xs font-semibold text-slate-300">
+                  Email Address
+                </Label>
+                <Input
+                  id="modal_email"
+                  type="email"
+                  placeholder="name@company.com"
+                  value={newEmpForm.email}
+                  onChange={(e) => setNewEmpForm({ ...newEmpForm, email: e.target.value })}
+                  className="bg-slate-950/70 border-slate-800 text-slate-100 placeholder:text-slate-500 text-sm focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="modal_phone" className="text-xs font-semibold text-slate-300">
+                  Phone Number
+                </Label>
+                <Input
+                  id="modal_phone"
+                  placeholder="+1 (555) 012-3456"
+                  value={newEmpForm.phone}
+                  onChange={(e) => setNewEmpForm({ ...newEmpForm, phone: e.target.value })}
+                  className="bg-slate-950/70 border-slate-800 text-slate-100 placeholder:text-slate-500 text-sm focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <DialogFooter className="pt-3 gap-2 sm:gap-0">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsAddModalOpen(false)}
+                className="border-slate-800 bg-slate-950/60 text-slate-300 hover:bg-slate-800 hover:text-white"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={submitting}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium gap-2"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Adding...
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="h-4 w-4" />
+                    Add Employee
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+export default function EmployeesPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-slate-400">Loading workforce directory...</div>}>
+      <EmployeesPageContent />
+    </Suspense>
   );
 }

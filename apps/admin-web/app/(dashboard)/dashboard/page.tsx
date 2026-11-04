@@ -495,7 +495,7 @@ export default function DashboardPage() {
                 </div>
               </Link>
 
-              <Link href="/employees/new" className="block group">
+              <Link href="/employees?action=new" className="block group">
                 <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 hover:border-emerald-500/50 hover:bg-slate-800/60 transition-all cursor-pointer shadow-xs">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5 font-bold text-sm text-slate-100 group-hover:text-emerald-400 transition-colors">

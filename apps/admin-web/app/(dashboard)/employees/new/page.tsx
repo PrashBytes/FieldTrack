@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase/client';
+import { supabase, shouldBypassNetwork } from '@/lib/supabase/client';
+import { MOCK_EMPLOYEES } from '@/lib/supabase/mock-data';
 import { useAuth } from '@/lib/auth/auth-context';
 import { PageHeader } from '@/components/admin/page-header';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -36,11 +37,43 @@ export default function NewEmployeePage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!profile?.organization_id) {
-      toast.error('Organization context missing');
+    setSaving(true);
+
+    // If local/mocked environment, bypass Supabase network calls
+    if (shouldBypassNetwork() || !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project-id') || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder')) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const fakeId = crypto.randomUUID();
+      const fakeProfileId = crypto.randomUUID();
+      const generatedCode = form.employee_code.trim() || `EMP-${Math.floor(100 + Math.random() * 900)}`;
+
+      (MOCK_EMPLOYEES as any[]).unshift({
+        id: fakeId,
+        organization_id: profile?.organization_id || '00000000-0000-0000-0000-000000000001',
+        profile_id: fakeProfileId,
+        employee_code: generatedCode,
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        department: form.department,
+        status: 'ACTIVE',
+        created_at: new Date().toISOString(),
+        profiles: {
+          full_name: form.full_name.trim(),
+          email: form.email.trim() || null,
+          role: 'EMPLOYEE',
+        },
+      });
+
+      toast.success('Employee added locally (Mock Mode)');
+      router.push('/employees');
+      setSaving(false);
       return;
     }
-    setSaving(true);
+
+    if (!profile?.organization_id) {
+      toast.error('Organization context missing');
+      setSaving(false);
+      return;
+    }
 
     try {
       // 1. Create a placeholder profile for the employee
